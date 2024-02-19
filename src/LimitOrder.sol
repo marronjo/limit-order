@@ -15,6 +15,9 @@ contract LimitOrder is BaseHook, ERC1155 {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
 
+    error WithdrawalFailed();
+    error NoPoisitionsToCancel();
+
     mapping(PoolId poolId => int24 tickLower) public lastTickLower;
     
     // pool id => lower tick price => trade direction => amount
@@ -83,6 +86,34 @@ contract LimitOrder is BaseHook, ERC1155 {
         IERC20(tokenToSell).transferFrom(msg.sender, address(this), amount);
 
         return tickLower;
+    }
+
+    function cancelOrder(PoolKey calldata poolKey, int24 tick, bool zeroForOne)
+    external 
+    {
+        int24 tickLower = _getTickLower(tick, poolKey.tickSpacing);
+        uint256 tokenId = getTokenId(poolKey, tickLower, zeroForOne);
+
+        uint256 amount = balanceOf(msg.sender, tokenId);
+
+        if(amount == 0){
+            revert NoPoisitionsToCancel();
+        }
+
+        limitOrders[poolKey.toId()][tickLower][zeroForOne] -= int256(amount);
+
+        totalSupply[tokenId] -= amount;
+        _burn(msg.sender, tokenId, amount);
+
+        address tokenToSell = zeroForOne ? 
+            Currency.unwrap(poolKey.currency0) : 
+            Currency.unwrap(poolKey.currency1);
+
+        bool withdraw = IERC20(tokenToSell).transfer(msg.sender, amount);
+
+        if(!withdraw) {
+            revert WithdrawalFailed();
+        }
     }
 
     function getTokenId(PoolKey calldata poolKey, int24 tickLower, bool zeroForOne) 
