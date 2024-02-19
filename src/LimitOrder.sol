@@ -5,13 +5,15 @@ import {BaseHook} from "periphery-next/BaseHook.sol";
 import {ERC1155} from "openzeppelin-contracts/contracts/token/ERC1155/ERC1155.sol";
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
-import {PoolIdLibrary} from "v4-core/types/PoolId.sol";
+import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
-import {PoolId} from "v4-core/types/PoolId.sol";
+import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
+import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 
 contract LimitOrder is BaseHook, ERC1155 {
 
     using PoolIdLibrary for PoolKey;
+    using CurrencyLibrary for Currency;
 
     mapping(PoolId poolId => int24 tickLower) public lastTickLower;
     
@@ -56,6 +58,31 @@ contract LimitOrder is BaseHook, ERC1155 {
     {
         _setLastTickLower(key.toId(), _getTickLower(tick, key.tickSpacing));
         return LimitOrder.afterInitialize.selector;
+    }
+
+    function placeOrder(PoolKey calldata poolKey, int24 tick, uint256 amount, bool zeroForOne) 
+    external returns(int24)
+    {
+        int24 tickLower = _getTickLower(tick, poolKey.tickSpacing);
+        limitOrders[poolKey.toId()][tickLower][zeroForOne] += int256(amount);
+
+        uint256 tokenId = getTokenId(poolKey, tickLower, zeroForOne);
+
+        if(!existingTokenIds[tokenId]) {
+            existingTokenIds[tokenId] = true;
+            tokenIdData[tokenId] = TokenData(poolKey, tickLower, zeroForOne);
+        }
+
+        _mint(msg.sender, tokenId, amount, "");
+        totalSupply[tokenId] += amount;
+
+        address tokenToSell = zeroForOne ? 
+            Currency.unwrap(poolKey.currency0) : 
+            Currency.unwrap(poolKey.currency1);
+
+        IERC20(tokenToSell).transferFrom(msg.sender, address(this), amount);
+
+        return tickLower;
     }
 
     function getTokenId(PoolKey calldata poolKey, int24 tickLower, bool zeroForOne) 
