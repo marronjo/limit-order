@@ -15,6 +15,7 @@ contract LimitOrder is BaseHook, ERC1155 {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
 
+    error DepositFailed();
     error WithdrawalFailed();
     error NoPoisitionsToCancel();
 
@@ -79,11 +80,13 @@ contract LimitOrder is BaseHook, ERC1155 {
         _mint(msg.sender, tokenId, amount, "");
         totalSupply[tokenId] += amount;
 
-        address tokenToSell = zeroForOne ? 
-            Currency.unwrap(poolKey.currency0) : 
-            Currency.unwrap(poolKey.currency1);
+        address tokenToSell = _getTokenFromPoolKey(poolKey, zeroForOne);
 
-        IERC20(tokenToSell).transferFrom(msg.sender, address(this), amount);
+        bool deposit = IERC20(tokenToSell).transferFrom(msg.sender, address(this), amount);
+
+        if(!deposit) {
+            revert DepositFailed();
+        }
 
         return tickLower;
     }
@@ -105,9 +108,7 @@ contract LimitOrder is BaseHook, ERC1155 {
         totalSupply[tokenId] -= amount;
         _burn(msg.sender, tokenId, amount);
 
-        address tokenToSell = zeroForOne ? 
-            Currency.unwrap(poolKey.currency0) : 
-            Currency.unwrap(poolKey.currency1);
+        address tokenToSell = _getTokenFromPoolKey(poolKey, zeroForOne);
 
         bool withdraw = IERC20(tokenToSell).transfer(msg.sender, amount);
 
@@ -120,6 +121,10 @@ contract LimitOrder is BaseHook, ERC1155 {
     public pure returns (uint256) 
     {
         return uint256(keccak256(abi.encodePacked(poolKey.toId(), tickLower, zeroForOne)));
+    }
+
+    function _getTokenFromPoolKey(PoolKey calldata poolKey, bool zeroForOne) private returns(address token){
+        token = zeroForOne ? Currency.unwrap(poolKey.currency0) : Currency.unwrap(poolKey.currency1);
     }
 
     function _setLastTickLower(PoolId poolId, int24 tick) private {
