@@ -7,8 +7,10 @@ import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
-import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
+import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import {TickMath} from "v4-core/libraries/TickMath.sol";
+import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 
 contract LimitOrder is BaseHook, ERC1155 {
 
@@ -18,6 +20,8 @@ contract LimitOrder is BaseHook, ERC1155 {
     error DepositFailed();
     error WithdrawalFailed();
     error NoPoisitionsToCancel();
+
+    bytes internal constant ZERO_BYTES = bytes("");
 
     mapping(PoolId poolId => int24 tickLower) public lastTickLower;
     
@@ -115,6 +119,34 @@ contract LimitOrder is BaseHook, ERC1155 {
         if(!withdraw) {
             revert WithdrawalFailed();
         }
+    }
+
+    function handleSwap(PoolKey calldata poolKey, IPoolManager.SwapParams calldata params) 
+    external returns(BalanceDelta)
+    {
+        BalanceDelta delta = poolManager.swap(poolKey, params, ZERO_BYTES);
+
+        //TODO refactor this into a function ...
+        if(params.zeroForOne){
+            if(delta.amount0() > 0) {
+                IERC20(Currency.unwrap(poolKey.currency0)).transfer(address(poolManager), uint128(delta.amount0()));
+                poolManager.settle(poolKey.currency0);
+            }
+            if(delta.amount1() < 0) {
+                poolManager.take(poolKey.currency1, address(this), uint128(-delta.amount1()));
+            }
+        }
+        else {
+            if(delta.amount1() > 0) {
+                IERC20(Currency.unwrap(poolKey.currency1)).transfer(address(poolManager), uint128(delta.amount1()));
+                poolManager.settle(poolKey.currency1);
+            }
+            if(delta.amount0() < 0) {
+                poolManager.take(poolKey.currency0, address(this), uint128(-delta.amount0()));
+            }
+        }
+        
+        return delta;
     }
 
     function getTokenId(PoolKey calldata poolKey, int24 tickLower, bool zeroForOne) 
