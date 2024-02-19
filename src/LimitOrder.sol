@@ -11,14 +11,18 @@ import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
+import {FixedPointMathLib} from "solmate/utils/FixedPointMathLib.sol";
 
 contract LimitOrder is BaseHook, ERC1155 {
 
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
+    using FixedPointMathLib for uint256;
 
     error DepositFailed();
     error WithdrawalFailed();
+    error InsufficientBalance();
+    error NoPoisitionsToRedeem();
     error NoPoisitionsToCancel();
 
     bytes internal constant ZERO_BYTES = bytes("");
@@ -61,11 +65,44 @@ contract LimitOrder is BaseHook, ERC1155 {
         });
     }
 
-    function afterInitialize(address, PoolKey calldata key, uint160, int24 tick) 
-    external returns (bytes4)
+    function afterInitialize(address, PoolKey calldata key, uint160, int24 tick, bytes calldata) 
+    external override poolManagerOnly returns (bytes4)
     {
         _setLastTickLower(key.toId(), _getTickLower(tick, key.tickSpacing));
         return LimitOrder.afterInitialize.selector;
+    }
+
+    function afterSwap(address, PoolKey calldata poolKey, IPoolManager.SwapParams calldata params, BalanceDelta, bytes calldata)
+    external override poolManagerOnly returns (bytes4)
+    {
+        int24 lastTickLow = lastTickLower[poolKey.toId()];
+        (,int24 currentTick,) = poolManager.getSlot0(poolKey.toId());
+        int24 currentTickLower = _getTickLower(currentTick, poolKey.tickSpacing);
+
+        bool swapZeroForOne = !params.zeroForOne;
+        int256 swapAmount;
+
+        // price of token 0 increased
+        if(lastTickLow < currentTickLower){
+            for(int24 tick = lastTickLow; tick < currentTickLower; tick += poolKey.tickSpacing){
+                swapAmount = limitOrders[poolKey.toId()][tick][swapZeroForOne];
+                if(swapAmount > 0){
+                    fillOrder(poolKey, tick, swapZeroForOne, swapAmount);
+                }
+            }
+        }
+        else {
+            for(int24 tick = lastTickLow; currentTickLower < tick; tick -= poolKey.tickSpacing){
+                swapAmount = limitOrders[poolKey.toId()][tick][swapZeroForOne];
+                if(swapAmount > 0){
+                    fillOrder(poolKey, tick, swapZeroForOne, swapAmount);
+                }
+            }
+        }
+
+        _setLastTickLower(poolKey.toId(), currentTickLower);
+        
+        return LimitOrder.afterSwap.selector;
     }
 
     function placeOrder(PoolKey calldata poolKey, int24 tick, uint256 amount, bool zeroForOne) 
@@ -121,6 +158,45 @@ contract LimitOrder is BaseHook, ERC1155 {
         }
     }
 
+    function redeem(
+        uint256 tokenId,
+        uint256 amount,
+        address destination
+    ) external {
+        uint256 totalClaimableBalance = claimableAmount[tokenId];
+
+        if(amount == 0 || totalClaimableBalance == 0){
+            revert NoPoisitionsToRedeem();
+        }
+
+        uint256 balance = balanceOf(msg.sender, tokenId);
+
+        if(balance < amount){
+            revert InsufficientBalance();
+        }
+
+        TokenData memory data = tokenIdData[tokenId];
+        address tokenToWithdraw = data.zeroForOne ? 
+            Currency.unwrap(data.poolKey.currency1) : 
+            Currency.unwrap(data.poolKey.currency0);
+        
+        uint256 amountToWithdraw = amount.mulDivDown(
+            totalClaimableBalance,
+            totalSupply[tokenId]
+        );
+
+        claimableAmount[tokenId] -= amountToWithdraw;
+        totalSupply[tokenId] -= amount;
+
+        _burn(msg.sender, tokenId, amount);
+
+        bool withdraw = IERC20(tokenToWithdraw).transfer(destination, amount);
+
+        if(!withdraw) {
+            revert WithdrawalFailed();
+        }
+    }
+
     function handleSwap(PoolKey calldata poolKey, IPoolManager.SwapParams calldata params) 
     external returns(BalanceDelta)
     {
@@ -153,12 +229,12 @@ contract LimitOrder is BaseHook, ERC1155 {
         PoolKey calldata poolKey,
         int24 tick,
         bool zeroForOne,
-        uint256 amount
+        int256 amount
     ) internal {
         //TODO optimise slippage calculation / sprtPriceLimitX96 param value 
         IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
             zeroForOne: zeroForOne,
-            amountSpecified: int256(amount),
+            amountSpecified: amount,
             sqrtPriceLimitX96: zeroForOne ? 
             TickMath.MIN_SQRT_RATIO + 1 :   // increasing price of token 1, lower ratio
             TickMath.MAX_SQRT_RATIO - 1     // increasing price of token 0, higher ratio
@@ -172,7 +248,7 @@ contract LimitOrder is BaseHook, ERC1155 {
             (BalanceDelta)
         );
 
-        limitOrders[poolKey.toId()][tick][zeroForOne] -= int256(amount);
+        limitOrders[poolKey.toId()][tick][zeroForOne] -= amount;
 
         uint256 tokenId = getTokenId(poolKey, tick, zeroForOne);
 
