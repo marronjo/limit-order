@@ -149,6 +149,39 @@ contract LimitOrder is BaseHook, ERC1155 {
         return delta;
     }
 
+    function fillOrder(
+        PoolKey calldata poolKey,
+        int24 tick,
+        bool zeroForOne,
+        uint256 amount
+    ) internal {
+        //TODO optimise slippage calculation / sprtPriceLimitX96 param value 
+        IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
+            zeroForOne: zeroForOne,
+            amountSpecified: int256(amount),
+            sqrtPriceLimitX96: zeroForOne ? 
+            TickMath.MIN_SQRT_RATIO + 1 :   // increasing price of token 1, lower ratio
+            TickMath.MAX_SQRT_RATIO - 1     // increasing price of token 0, higher ratio
+        });
+
+        BalanceDelta delta = abi.decode(
+            poolManager.lock(
+                address(this),
+                abi.encodeCall(this.handleSwap, (poolKey, params))
+            ),
+            (BalanceDelta)
+        );
+
+        limitOrders[poolKey.toId()][tick][zeroForOne] -= int256(amount);
+
+        uint256 tokenId = getTokenId(poolKey, tick, zeroForOne);
+
+        uint256 amountReceivedFromSwap = zeroForOne ?
+            uint256(int256(-delta.amount1())) : uint256(int256(-delta.amount0()));
+        
+        claimableAmount[tokenId] += amountReceivedFromSwap;
+    }
+
     function getTokenId(PoolKey calldata poolKey, int24 tickLower, bool zeroForOne) 
     public pure returns (uint256) 
     {
