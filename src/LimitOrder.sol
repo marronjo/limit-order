@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.13;
+pragma solidity ^0.8.24;
 
 import {BaseHook} from "periphery-next/BaseHook.sol";
 import {ERC1155} from "openzeppelin-contracts/contracts/token/ERC1155/ERC1155.sol";
@@ -123,7 +123,9 @@ contract LimitOrder is BaseHook, ERC1155 {
         return uint256(keccak256(abi.encodePacked(poolKey.toId(), tickLower, zeroForOne)));
     }
 
-    function _getTokenFromPoolKey(PoolKey calldata poolKey, bool zeroForOne) private returns(address token){
+    function _getTokenFromPoolKey(PoolKey calldata poolKey, bool zeroForOne) 
+    private pure returns(address token)
+    {
         token = zeroForOne ? Currency.unwrap(poolKey.currency0) : Currency.unwrap(poolKey.currency1);
     }
 
