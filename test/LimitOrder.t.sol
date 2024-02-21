@@ -54,6 +54,38 @@ contract LimitOrderTest is Test, GasSnapshot {
 
     uint160 constant SQRT_RATIO_1_1 = 79228162514264337593543950336;
 
+    function setUp() public {
+        _deployTokens();
+        poolManager = new PoolManager(500_000);
+        _mockValidateHookAddress();
+        _initializePool();
+        _addLiquidty();
+    }
+
+    function test_placeOrder() public {
+        int24 tick = 100;
+        uint256 amount = 10 ether;
+        bool zeroForOne = true;
+
+        uint256 startingBalance = token0.balanceOf(address(this));
+
+        token0.approve(address(hook), amount);
+
+        int24 tickLower = hook.placeOrder(poolKey, tick, amount, zeroForOne);
+
+        uint256 endingBalance = token0.balanceOf(address(this));
+
+        assertEq(tickLower, 60);
+
+        assertEq(startingBalance - amount, endingBalance);
+
+        uint256 tokenId = hook.getTokenId(poolKey, tickLower, zeroForOne);
+        uint256 tokenBalance = hook.balanceOf(address(this), tokenId);
+
+        assertTrue(tokenId != 0);
+        assertEq(tokenBalance, amount);
+    }
+
     function _initializePool() private {
         testModifyPositionRouter = new PoolModifyPositionTest(
             IPoolManager(address(poolManager))
@@ -73,6 +105,8 @@ contract LimitOrderTest is Test, GasSnapshot {
 
         poolId = poolKey.toId();
 
+        //poolManager.lock(address(), bytes(""));
+
         poolManager.initialize(poolKey, SQRT_RATIO_1_1, bytes("")); // hookdata empty bytes?
     }
 
@@ -83,6 +117,7 @@ contract LimitOrderTest is Test, GasSnapshot {
         token0.approve(address(testModifyPositionRouter), 100 ether);
         token1.approve(address(testModifyPositionRouter), 100 ether);
 
+        // +- 60
         poolManager.modifyPosition(
             poolKey,
             IPoolManager.ModifyPositionParams({
@@ -93,6 +128,7 @@ contract LimitOrderTest is Test, GasSnapshot {
             bytes("")
         );
 
+        // +- 120
         poolManager.modifyPosition(
             poolKey,
             IPoolManager.ModifyPositionParams({
@@ -102,6 +138,20 @@ contract LimitOrderTest is Test, GasSnapshot {
             }),
             bytes("")
         );
+
+        // +- max / min
+        poolManager.modifyPosition(
+            poolKey,
+            IPoolManager.ModifyPositionParams({
+                tickLower: TickMath.minUsableTick(60), 
+                tickUpper: TickMath.maxUsableTick(60),
+                liquidityDelta: 50 ether            
+            }),
+            bytes("")
+        );
+
+        token0.approve(address(testSwapRouter), 100 ether);
+        token1.approve(address(testSwapRouter), 100 ether);
     }
 
     function _deployTokens() private {
@@ -135,5 +185,28 @@ contract LimitOrderTest is Test, GasSnapshot {
                 vm.store(address(hook), slot, vm.load(address(mock), slot));
             }
         }
+    }
+
+    //ERC 1155 tokens
+    receive() external payable {}
+
+    function onERC1155Received(
+        address,
+        address,
+        uint256,
+        uint256,
+        bytes calldata
+    ) external pure returns (bytes4) {
+        return this.onERC1155Received.selector;
+    }
+
+    function onERC1155BatchReceived(
+        address,
+        address,
+        uint256[] calldata,
+        uint256[] calldata,
+        bytes calldata
+    ) external pure returns (bytes4) {
+        return this.onERC1155BatchReceived.selector;
     }
 }
